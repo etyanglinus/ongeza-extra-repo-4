@@ -1,0 +1,54 @@
+# Release pipeline: validate manifests on every push; deploy a set of image versions to staging,
+# smoke-test it, then promote the SAME versions to production after a manual approval
+# (GitHub environment "production" with required reviewers).
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version: {description: "Image tag for api, identity, ai and web (e.g. 0.3.0)", required: true}
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for overlay in staging production production-kenya; do kubectl kustomize k8s/overlays/$overlay > /tmp/$overlay.yaml; done
+      - uses: aquasecurity/trivy-action@0.28.0
+        with: {scan-type: config, scan-ref: k8s, severity: "HIGH,CRITICAL", exit-code: "1"}
+  scan-images:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy: {matrix: {image: [ongeza-api, ongeza-identity, ongeza-ai, ongeza-web]}}
+    steps:
+      - uses: aquasecurity/trivy-action@0.28.0
+        with: {image-ref: "ghcr.io/etyanglinus/${{ matrix.image }}:${{ inputs.version }}", severity: "CRITICAL", exit-code: "1", ignore-unfixed: true}
+  staging:
+    needs: scan-images
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ secrets.STAGING_KUBECONFIG }}" > kubeconfig
+      - run: |
+          cd k8s/overlays/staging
+          for i in api identity ai web; do kustomize edit set image ongeza/$i=ghcr.io/etyanglinus/ongeza-$i:${{ inputs.version }}; done
+          kubectl --kubeconfig ../../../kubeconfig apply -k . && kubectl --kubeconfig ../../../kubeconfig -n ongeza-staging rollout status deploy/api-web --timeout=10m
+      - name: Smoke test
+        run: |
+          curl -fsS https://staging.ongeza.co.ke/api/v1/ready
+          curl -fsS https://staging-id.ongeza.co.ke/.well-known/jwks.json
+          curl -fsS -H "Authorization: Bearer ${{ secrets.STAGING_METRICS_TOKEN }}" https://staging.ongeza.co.ke/metrics | grep -q 'ongeza_trading_halted 0'
+  production:
+    needs: staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ secrets.PRODUCTION_KUBECONFIG }}" > kubeconfig
+      - run: |
+          cd k8s/overlays/production-kenya/../production
+          for i in api identity ai web; do kustomize edit set image ongeza/$i=ghcr.io/etyanglinus/ongeza-$i:${{ inputs.version }}; done
+          cd ../production-kenya && kubectl --kubeconfig ../../../kubeconfig apply -k . && kubectl --kubeconfig ../../../kubeconfig -n ongeza rollout status deploy/api-web --timeout=15m

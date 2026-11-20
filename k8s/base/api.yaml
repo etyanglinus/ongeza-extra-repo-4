@@ -13,6 +13,8 @@ data:
   HISA_IDENTITY_JWKS_URL: http://identity:8081/.well-known/jwks.json
   HISA_REQUIRE_STEP_UP: "true"
   HISA_IDEMPOTENCY_REQUIRED: "true"
+  HISA_CUSTODY_MODEL: omnibus
+  SECRETS_DIR: /run/secrets/ongeza
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -26,11 +28,13 @@ spec:
     spec:
       topologySpreadConstraints:
         - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: DoNotSchedule, labelSelector: {matchLabels: {app: api, tier: web}}}
+      volumes: [{name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}]
       containers:
         - name: api
           image: ongeza/api
           ports: [{containerPort: 80, name: http}]
-          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: partner-databases}}]
+          volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}]
           readinessProbe: {httpGet: {path: /api/v1/ready, port: http}, periodSeconds: 5}
           livenessProbe: {httpGet: {path: /api/v1/health, port: http}, periodSeconds: 10, failureThreshold: 6}
           lifecycle: {preStop: {exec: {command: ["sh", "-c", "sleep 5"]}}}
@@ -46,11 +50,13 @@ spec:
     metadata: {labels: {app: api, tier: worker}}
     spec:
       terminationGracePeriodSeconds: 90
+      volumes: [{name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}]
       containers:
         - name: worker
           image: ongeza/api
           command: ["php", "artisan", "queue:work", "--tries=5", "--backoff=5,30,120", "--max-time=3600"]
-          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: partner-databases}}]
+          volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}]
           resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 512Mi}}
 ---
 apiVersion: apps/v1
@@ -62,11 +68,13 @@ spec:
   template:
     metadata: {labels: {app: api, tier: scheduler}}
     spec:
+      volumes: [{name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}]
       containers:
         - name: scheduler
           image: ongeza/api
           command: ["php", "artisan", "schedule:work"]
-          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: partner-databases}}]
+          volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}]
           resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
 ---
 # Run before every rollout (Argo CD PreSync / Helm pre-upgrade). Migrations must be expand-then-contract.
@@ -78,11 +86,13 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      volumes: [{name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}]
       containers:
         - name: migrate
           image: ongeza/api
           command: ["sh", "-c", "php artisan migrate --force --isolated && php artisan tenants:migrate"]
-          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: partner-databases}}]
+          volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}]
 ---
 apiVersion: v1
 kind: Service

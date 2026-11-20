@@ -1,0 +1,27 @@
+# Staging: same manifests as production, smaller, connected to partner SANDBOXES (Kingdom UAT,
+# Co-op Connect sandbox, Daraja sandbox, Smile ID test). The green end-to-end run happens here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ongeza-staging
+resources: [../../base]
+images:
+  - {name: ongeza/identity, newName: ghcr.io/etyanglinus/ongeza-identity, newTag: "staging"}
+  - {name: ongeza/api, newName: ghcr.io/etyanglinus/ongeza-api, newTag: "staging"}
+  - {name: ongeza/ai, newName: ghcr.io/etyanglinus/ongeza-ai, newTag: "staging"}
+  - {name: ongeza/web, newName: ghcr.io/etyanglinus/ongeza-web, newTag: "staging"}
+patches:
+  - target: {kind: Deployment, name: api-web}
+    patch: '[{"op":"replace","path":"/spec/replicas","value":2}]'
+  - target: {kind: Cluster, name: ongeza-db}
+    patch: '[{"op":"replace","path":"/spec/instances","value":2},{"op":"replace","path":"/spec/storage/size","value":"20Gi"}]'
+  - target: {kind: ConfigMap, name: api-config}
+    patch: |-
+      - {op: add, path: /data/APP_ENV, value: staging}
+      - {op: add, path: /data/OMNIBUS_BROKER_DRIVER, value: kingdom}
+      - {op: add, path: /data/OMNIBUS_BANK_DRIVER, value: coop}
+      - {op: add, path: /data/HISA_PAYMENT_TRANSPORT, value: sandbox}
+      - {op: add, path: /data/MARKET_DATA_DRIVER, value: http}
+      - {op: add, path: /data/KYC_DRIVER, value: smileid}
+      - {op: add, path: /data/SMILEID_BASE_URL, value: "https://testapi.smileidentity.com"}
+      - {op: add, path: /data/SMS_DRIVER, value: africastalking}
+      - {op: add, path: /data/AFRICASTALKING_USERNAME, value: sandbox}

@@ -1,0 +1,28 @@
+# Fixed outgoing IP addresses. Kingdom Securities, Co-operative Bank (Co-op Connect), Safaricom
+# (Daraja), the SMS providers and the KYC provider allow-list our IPs, so all partner traffic
+# leaves through dedicated egress gateway nodes with static public IPs:
+#   - Cloud: route the cluster subnet through a NAT gateway with 2 static IPs (one per zone).
+#   - Cilium (shown here): CiliumEgressGatewayPolicy pins egress to labelled gateway nodes.
+# Give partners BOTH IPs so a zone failure does not break the integration.
+apiVersion: cilium.io/v2
+kind: CiliumEgressGatewayPolicy
+metadata: {name: ongeza-partners}
+spec:
+  selectors:
+    - podSelector: {matchLabels: {"io.kubernetes.pod.namespace": ongeza}}
+  destinationCIDRs: ["0.0.0.0/0"]
+  excludedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+  egressGateway:
+    nodeSelector: {matchLabels: {ongeza.io/egress-gateway: "true"}}
+---
+# Default-deny egress for the namespace; only DNS, in-cluster services and HTTPS out (through the gateway).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-egress, namespace: ongeza}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {}}]
+    - ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - ports: [{protocol: TCP, port: 443}]

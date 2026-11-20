@@ -1,0 +1,85 @@
+# Prometheus Operator objects: scrape the API's /metrics (bearer token) and the identity service,
+# and page on-call for anything that can hurt customer money. Each alert names its runbook.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: ongeza, namespace: ongeza}
+spec:
+  selector: {matchExpressions: [{key: app, operator: In, values: [api, identity]}]}
+  endpoints:
+    - {port: http, path: /metrics, interval: 30s, bearerTokenSecret: {name: api-secrets, key: METRICS_TOKEN}}
+    - {port: http, path: /actuator/prometheus, interval: 30s}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: {name: ongeza-money, namespace: ongeza}
+spec:
+  groups:
+    - name: ongeza.money
+      rules:
+        - alert: TradingHalted
+          expr: max(ongeza_trading_halted) == 1
+          labels: {severity: page}
+          annotations: {summary: "Critical reconciliation break: orders, loans and withdrawals are paused", runbook: "runbooks/reconciliation-break.md"}
+        - alert: ReconciliationStale
+          expr: max(ongeza_reconciliation_age_seconds) > 3600
+          labels: {severity: page}
+          annotations: {summary: "No reconciliation in the last hour", runbook: "runbooks/scheduler.md"}
+        - alert: OrdersStuck
+          expr: max(ongeza_orders_oldest_queued_seconds) > 600 and on() hour() >= 6 and on() hour() < 12
+          labels: {severity: page}
+          annotations: {summary: "Orders queued for over 10 minutes during the NSE session (06:30-12:00 UTC)", runbook: "runbooks/broker-connectivity.md"}
+        - alert: SettlementOverdue
+          expr: max(ongeza_block_orders_unsettled_overdue) > 0
+          for: 2h
+          labels: {severity: page}
+          annotations: {summary: "Block trades past their settlement date", runbook: "runbooks/settlement.md"}
+        - alert: PricesStale
+          expr: max(ongeza_prices_stale) > 3
+          for: 10m
+          labels: {severity: page}
+          annotations: {summary: "Several securities without a fresh price during the session", runbook: "runbooks/market-data.md"}
+        - alert: TransferOutcomeUnknown
+          expr: max(ongeza_treasury_uncertain) > 0
+          labels: {severity: page}
+          annotations: {summary: "A trust-account transfer has had no bank outcome for 2 hours", runbook: "runbooks/treasury.md"}
+        - alert: ApprovedActionFailed
+          expr: max(ongeza_approvals_failed) > 0
+          labels: {severity: ticket}
+          annotations: {summary: "An approved action failed to execute", runbook: "runbooks/approvals.md"}
+        - alert: LendingPoolLow
+          expr: max(ongeza_lending_pool_cents) < 50000000
+          for: 15m
+          labels: {severity: ticket}
+          annotations: {summary: "Lending pool below KES 500,000: ask Co-op to top up", runbook: "runbooks/lending-pool.md"}
+        - alert: MessagesBacklog
+          expr: max(ongeza_messages_queued) > 500 or max(ongeza_messages_failed_24h) > 100
+          for: 10m
+          labels: {severity: page}
+          annotations: {summary: "Customer SMS/push not going out (margin calls depend on it)", runbook: "runbooks/messaging.md"}
+        - alert: SuspenseGrowing
+          expr: max(ongeza_suspense_cents) > 10000000
+          for: 1d
+          labels: {severity: ticket}
+          annotations: {summary: "Unidentified deposits above KES 100,000 for a day", runbook: "runbooks/suspense.md"}
+        - alert: ScreeningHitsOpen
+          expr: max(ongeza_screening_hits_open) > 0
+          for: 4h
+          labels: {severity: ticket}
+          annotations: {summary: "Customers on hold for a sanctions/PEP hit awaiting review", runbook: "runbooks/compliance.md"}
+    - name: ongeza.platform
+      rules:
+        - alert: ApiErrors
+          expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.02
+          for: 5m
+          labels: {severity: page}
+          annotations: {summary: "More than 2% of identity requests failing"}
+        - alert: QueueJobsFailing
+          expr: max(ongeza_jobs_failed) > 0
+          for: 15m
+          labels: {severity: ticket}
+          annotations: {summary: "Failed queue jobs need a look"}
+        - alert: DatabaseReplicationLag
+          expr: max(cnpg_pg_replication_lag) > 30
+          for: 5m
+          labels: {severity: page}
+          annotations: {summary: "PostgreSQL replica lag above 30s (failover would lose data)"}

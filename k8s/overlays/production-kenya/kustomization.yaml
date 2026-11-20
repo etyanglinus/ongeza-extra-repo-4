@@ -1,0 +1,15 @@
+# Production hosted in Kenya (data residency): a Kubernetes cluster in a Nairobi data centre
+# (e.g. iXAfrica, Africa Data Centres or a Kenyan cloud) with 3 failure domains. Customer
+# personal data and the ledger stay in-country; encrypted backups replicate to a second Kenyan
+# site. Use ../production for a regional cloud if Co-op and counsel agree it is acceptable.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../production]
+patches:
+  - target: {kind: Cluster, name: ongeza-db}
+    patch: |-
+      - {op: replace, path: /spec/storage/storageClass, value: nvme-encrypted}
+      - {op: replace, path: /spec/backup/barmanObjectStore/destinationPath, value: "s3://ongeza-db-backups-nbo/"}
+      - {op: add, path: /spec/backup/barmanObjectStore/endpointURL, value: "https://s3.nbo2.example-kenya-dc.co.ke"}
+  - target: {kind: Deployment}
+    patch: '[{"op":"add","path":"/spec/template/spec/nodeSelector","value":{"topology.kubernetes.io/region":"ke-nairobi"}}]'

@@ -121,3 +121,16 @@ fees and fund revenue sharing.
   manager and rotate them on staff changes.
 - Run `php artisan ongeza:release-check` against production configuration before going
   live.
+
+
+## Production operations (added)
+
+| Concern | Where |
+|---|---|
+| Secrets from Vault/Key Vault via External Secrets, mounted as files (`SECRETS_DIR`) | `k8s/base/secrets.yaml` |
+| Prometheus scraping and money alerts (halt, stale reconciliation, stuck orders, overdue settlement, stale prices, uncertain transfers, lending pool, messaging) | `k8s/base/monitoring.yaml` |
+| Daily hash-chained audit export shipped to an object-locked bucket; monthly restore drill | `k8s/base/operations.yaml`, `scripts/restore-drill.sh` |
+| Fixed egress IPs for partner allow-lists and default-deny egress | `k8s/base/egress.yaml` |
+| Staging on partner sandboxes | `k8s/overlays/staging` |
+| Production hosted in Kenya | `k8s/overlays/production-kenya` |
+| Validate → scan → staging → smoke test → approved production | `.github/workflows/release.yml` |

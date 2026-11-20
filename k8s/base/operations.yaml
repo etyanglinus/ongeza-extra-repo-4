@@ -1,0 +1,59 @@
+# Scheduled operational jobs that sit outside the application scheduler.
+#  - audit-shipper: copies the daily hash-chained audit/journal files (php artisan audit:export)
+#    to an object-locked (WORM) bucket, so no one at Ongeza can alter history.
+#  - restore-drill: monthly, restores last night's backup into a scratch database and verifies
+#    the ledger chain; a failure pages on-call. Record timings as measured RPO/RTO.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: audit-shipper, namespace: ongeza}
+spec:
+  schedule: "15 22 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          volumes:
+            - {name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}
+            - {name: audit, emptyDir: {}}
+          initContainers:
+            - name: export
+              image: ongeza/api
+              command: ["php", "artisan", "audit:export"]
+              envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: partner-databases}}]
+              volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}, {name: audit, mountPath: /var/www/html/storage/app/private/audit}]
+          containers:
+            - name: ship
+              image: amazon/aws-cli:2.22.35
+              command: ["sh", "-c", "aws s3 cp /audit s3://ongeza-audit-worm/$(date -u +%Y/%m)/ --recursive --object-lock-mode COMPLIANCE --object-lock-retain-until-date $(date -u -d '+7 years' +%Y-%m-%dT00:00:00Z)"]
+              envFrom: [{secretRef: {name: backup-credentials}}]
+              volumeMounts: [{name: audit, mountPath: /audit, readOnly: true}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: restore-drill, namespace: ongeza}
+spec:
+  schedule: "30 1 1 * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          volumes: [{name: secrets, secret: {secretName: api-secrets, defaultMode: 0400}}]
+          initContainers:
+            - name: restore
+              image: ghcr.io/cloudnative-pg/postgresql:16.4
+              command: ["sh", "-c", "pg_dump -Fc \"$SOURCE_URL\" > /tmp/d && pg_restore --clean --if-exists --no-owner --exit-on-error -d \"$SCRATCH_URL\" /tmp/d"]
+              env:
+                - {name: SOURCE_URL, valueFrom: {secretKeyRef: {name: ongeza-db-app, key: uri}}}
+                - {name: SCRATCH_URL, valueFrom: {secretKeyRef: {name: restore-drill-db, key: uri}}}
+          containers:
+            - name: verify
+              image: ongeza/api
+              command: ["php", "artisan", "omnibus:verify-ledger"]
+              envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: restore-drill-db-env}}]
+              volumeMounts: [{name: secrets, mountPath: /run/secrets/ongeza, readOnly: true}]
