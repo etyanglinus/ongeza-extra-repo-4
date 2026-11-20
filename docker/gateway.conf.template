@@ -1,0 +1,36 @@
+# Single public entry point: one origin for the app, API, identity and coach.
+# Every POST carries an Idempotency-Key, so retrying on another upstream is safe.
+upstream api      { server api:80 max_fails=2 fail_timeout=5s; }
+upstream identity { server identity:8081 max_fails=2 fail_timeout=5s; }
+upstream ai       { server ai:8090 max_fails=2 fail_timeout=5s; }
+upstream web      { server web:8080; }
+
+map $http_x_request_id $request_id_out { "" $request_id; default $http_x_request_id; }
+
+server {
+    listen 8000;
+    client_max_body_size 12m;
+    server_tokens off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    # Only partner banks may embed the mini-app (set PARTNER_FRAME_ANCESTORS, space separated).
+    add_header Content-Security-Policy "frame-ancestors 'self' ${PARTNER_FRAME_ANCESTORS}" always;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-Id $request_id_out;
+    proxy_next_upstream error timeout http_502 http_503 non_idempotent;
+    proxy_next_upstream_tries 2;
+
+    location /api/       { proxy_pass http://api; }
+    location /id/        { proxy_pass http://identity/; }
+    location /ai/        { proxy_pass http://ai/; proxy_read_timeout 120s; }
+    location /app/       { proxy_pass http://web; }
+    location = /         { return 302 /app/; }
+    # Partner onboarding and billing never go through the public gateway.
+    location /api/platform/ { return 404; }
+    location /id/admin/     { return 404; }
+}

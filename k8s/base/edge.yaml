@@ -1,0 +1,75 @@
+# Coach (AI gateway), web app and the public ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ai, namespace: ongeza, labels: {app: ai}}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: ai}}
+  template:
+    metadata: {labels: {app: ai}}
+    spec:
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: ai}}}
+      containers:
+        - name: ai
+          image: ongeza/ai
+          ports: [{containerPort: 8090, name: http}]
+          env:
+            - {name: ONGEZA_API_URL, value: "http://api"}
+            - {name: IDENTITY_JWKS_URL, value: "http://identity:8081/.well-known/jwks.json"}
+          envFrom: [{secretRef: {name: ai-secrets}}]
+          readinessProbe: {httpGet: {path: /readyz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}}
+          resources: {requests: {cpu: 100m, memory: 192Mi}, limits: {memory: 512Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: ai, namespace: ongeza}
+spec: {selector: {app: ai}, ports: [{port: 80, targetPort: http}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: ongeza, labels: {app: web}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: web
+          image: ongeza/web
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          resources: {requests: {cpu: 20m, memory: 32Mi}, limits: {memory: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: ongeza}
+spec: {selector: {app: web}, ports: [{port: 80, targetPort: http}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ongeza
+  namespace: ongeza
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 12m
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # Only partner banks may embed the mini-app; edit per partner onboarding.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Content-Security-Policy: frame-ancestors 'self' https://ibank.co-opbank.co.ke";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+spec:
+  ingressClassName: nginx
+  tls: [{hosts: [app.ongeza.co.ke], secretName: ongeza-tls}]
+  rules:
+    - host: app.ongeza.co.ke
+      http:
+        paths:
+          - {path: /id(/|$)(v1/.*|\.well-known/.*), pathType: ImplementationSpecific, backend: {service: {name: identity, port: {number: 8081}}}}
+          - {path: /ai(/|$)(v1/.*|mcp), pathType: ImplementationSpecific, backend: {service: {name: ai, port: {number: 80}}}}
+          - {path: /()(api/v1/.*), pathType: ImplementationSpecific, backend: {service: {name: api, port: {number: 80}}}}
+          - {path: /()(app/.*), pathType: ImplementationSpecific, backend: {service: {name: web, port: {number: 80}}}}

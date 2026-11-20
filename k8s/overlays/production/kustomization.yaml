@@ -1,0 +1,9 @@
+# Pin released image versions here; secrets come from your secret manager (External Secrets / Sealed Secrets).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+images:
+  - {name: ongeza/identity, newName: ghcr.io/etyanglinus/ongeza-identity, newTag: "0.2.0"}
+  - {name: ongeza/api, newName: ghcr.io/etyanglinus/ongeza-api, newTag: "0.2.0"}
+  - {name: ongeza/ai, newName: ghcr.io/etyanglinus/ongeza-ai, newTag: "0.2.0"}
+  - {name: ongeza/web, newName: ghcr.io/etyanglinus/ongeza-web, newTag: "0.2.0"}

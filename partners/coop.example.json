@@ -1,0 +1,16 @@
+{
+  "id": "coop",
+  "name": "Co-operative Bank of Kenya",
+  "kind": "bank",
+  "dedicatedDatabase": true,
+  "issuer": "https://api.co-opbank.co.ke",
+  "jwksFile": "coop.jwks.json",
+  "allowPhonePin": false,
+  "allowHostLaunch": true,
+  "frameOrigins": ["https://ibank.co-opbank.co.ke"],
+  "branding": { "displayName": "Co-op Hisa", "primaryColor": "#006B3F", "secondaryColor": "#004D2C", "accentColor": "#8BC53F" },
+  "products": ["trading", "chamas", "junior", "goals", "autopilot", "vaults", "baskets", "loans", "businesses", "diaspora", "academy", "coach"],
+  "connectors": { "bank": "demo", "broker": "demo", "custody": "demo" },
+  "billing": { "platformFee": 350000, "includedActiveCustomers": 20000, "perActiveCustomer": 12, "brokerageFeeSharePercent": 30, "chamaPremiumFee": 200, "loanOriginationBps": 50 },
+  "settings": { "supportPhone": "0711 049 000", "brokerName": "Kingdom Securities Ltd", "custodianName": "Co-operative Bank of Kenya", "fundManagerName": "Co-op Trust Investment Services" }
+}

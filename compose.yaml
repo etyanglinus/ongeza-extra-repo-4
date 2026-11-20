@@ -1,0 +1,142 @@
+# Ongeza platform: full stack on one machine (development, demos, pilot).
+#   make secrets && make up && make migrate      -> http://localhost:8000/app/
+# Production runs the same images on Kubernetes (k8s/), with managed HA databases.
+name: ongeza
+
+x-api: &api
+  build:
+    context: ${ONGEZA_ADMIN_DIR}
+    dockerfile: ${DEPLOY_DIR}/docker/api.Dockerfile
+  image: ongeza/api:local
+  env_file: [.env, .env.partners]
+  environment: &api-env
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_URL: ${PUBLIC_URL}
+    LOG_CHANNEL: stderr
+    DB_CONNECTION: pgsql
+    DB_URL: pgsql://ongeza:${POSTGRES_PASSWORD}@postgres:5432/ongeza_platform
+    CACHE_STORE: redis
+    SESSION_DRIVER: redis
+    QUEUE_CONNECTION: redis
+    REDIS_HOST: redis
+    HISA_MODE: ${HISA_MODE}
+    HISA_IDENTITY_JWKS_URL: http://identity:8081/.well-known/jwks.json
+    HISA_IDENTITY_ISSUER: ${PUBLIC_URL}/id
+    HISA_REQUIRE_STEP_UP: "true"
+    HISA_IDEMPOTENCY_REQUIRED: "true"
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ongeza
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ongeza
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U ongeza"], interval: 3s, retries: 30}
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes: [redisdata:/data]
+    healthcheck: {test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"], interval: 3s, retries: 30}
+    restart: unless-stopped
+
+  identity:
+    build: {context: "${ONGEZA_IDENTITY_DIR}"}
+    image: ongeza/identity:local
+    env_file: [.env]
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/ongeza_identity
+      DATABASE_USERNAME: ongeza
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_ISSUER: ${PUBLIC_URL}/id
+      OTP_EXPOSE_IN_RESPONSE: ${OTP_EXPOSE_IN_RESPONSE}
+    ports: ["127.0.0.1:8081:8081"]   # operations access (partner onboarding); public traffic uses the gateway
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/actuator/health/readiness || exit 1"], interval: 5s, retries: 40}
+    restart: unless-stopped
+
+  api-migrate:
+    <<: *api
+    command: ["sh", "-c", "php artisan migrate --force --isolated && php artisan tenants:migrate"]
+    restart: "no"
+    profiles: ["ops"]
+
+  api:
+    <<: *api
+    environment:
+      <<: *api-env
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+    ports: ["127.0.0.1:8080:80"]       # operations access (platform API); public traffic uses the gateway
+
+  worker:
+    <<: *api
+    environment: {<<: *api-env, REDIS_PASSWORD: "${REDIS_PASSWORD}"}
+    command: ["php", "artisan", "queue:work", "--tries=5", "--backoff=5,30,120", "--max-time=3600"]
+    healthcheck: {disable: true}
+
+  scheduler:
+    <<: *api
+    environment: {<<: *api-env, REDIS_PASSWORD: "${REDIS_PASSWORD}"}
+    command: ["php", "artisan", "schedule:work"]
+    healthcheck: {disable: true}
+
+  ai:
+    build: {context: "${ONGEZA_AI_DIR}"}
+    image: ongeza/ai:local
+    env_file: [.env]
+    environment:
+      PORT: "8090"
+      ONGEZA_API_URL: http://api
+      IDENTITY_JWKS_URL: http://identity:8081/.well-known/jwks.json
+      IDENTITY_ISSUER: ${PUBLIC_URL}/id
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ${ONGEZA_MOBILE_DIR}
+      dockerfile: ${DEPLOY_DIR}/docker/web.Dockerfile
+      args:
+        IDENTITY_BASE_URL: ${PUBLIC_URL}/id
+        AI_BASE_URL: ${PUBLIC_URL}/ai
+    image: ongeza/web:local
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:1.27-alpine
+    environment:
+      PARTNER_FRAME_ANCESTORS: ${PARTNER_FRAME_ANCESTORS}
+    volumes: ["./docker/gateway.conf.template:/etc/nginx/templates/default.conf.template:ro"]
+    ports: ["${GATEWAY_PORT:-8000}:8000"]
+    depends_on: [api, identity, ai, web]
+    restart: unless-stopped
+
+  # Demo partner: an internet-banking page that embeds Ongeza (make demo).
+  mockbank:
+    image: node:22-alpine
+    profiles: ["demo"]
+    working_dir: /kit
+    command: ["sh", "-c", "npm ci --silent && npx tsx examples/mock-bank/server.ts"]
+    environment:
+      MINI_APP_URL: ${PUBLIC_URL}/app/
+      ISSUER: http://localhost:7070
+      ONGEZA_IDENTITY_URL: http://identity:8081
+      ONGEZA_API_URL: http://api
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+    volumes: ["${ONGEZA_BANK_KIT_DIR}:/kit"]
+    ports: ["7070:7070"]
+    depends_on: [identity, api]
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,104 @@
+# Core API: web (3+), queue workers (2+), scheduler (2, onOneServer locks), migrations as a pre-deploy Job.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: api-config, namespace: ongeza}
+data:
+  APP_ENV: production
+  APP_DEBUG: "false"
+  LOG_CHANNEL: stderr
+  DB_CONNECTION: pgsql
+  CACHE_STORE: redis
+  SESSION_DRIVER: redis
+  QUEUE_CONNECTION: redis
+  HISA_IDENTITY_JWKS_URL: http://identity:8081/.well-known/jwks.json
+  HISA_REQUIRE_STEP_UP: "true"
+  HISA_IDEMPOTENCY_REQUIRED: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api-web, namespace: ongeza, labels: {app: api, tier: web}}
+spec:
+  replicas: 3
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector: {matchLabels: {app: api, tier: web}}
+  template:
+    metadata: {labels: {app: api, tier: web}}
+    spec:
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: DoNotSchedule, labelSelector: {matchLabels: {app: api, tier: web}}}
+      containers:
+        - name: api
+          image: ongeza/api
+          ports: [{containerPort: 80, name: http}]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          readinessProbe: {httpGet: {path: /api/v1/ready, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /api/v1/health, port: http}, periodSeconds: 10, failureThreshold: 6}
+          lifecycle: {preStop: {exec: {command: ["sh", "-c", "sleep 5"]}}}
+          resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 512Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api-worker, namespace: ongeza, labels: {app: api, tier: worker}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api, tier: worker}}
+  template:
+    metadata: {labels: {app: api, tier: worker}}
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: worker
+          image: ongeza/api
+          command: ["php", "artisan", "queue:work", "--tries=5", "--backoff=5,30,120", "--max-time=3600"]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 512Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api-scheduler, namespace: ongeza, labels: {app: api, tier: scheduler}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api, tier: scheduler}}
+  template:
+    metadata: {labels: {app: api, tier: scheduler}}
+    spec:
+      containers:
+        - name: scheduler
+          image: ongeza/api
+          command: ["php", "artisan", "schedule:work"]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 256Mi}}
+---
+# Run before every rollout (Argo CD PreSync / Helm pre-upgrade). Migrations must be expand-then-contract.
+apiVersion: batch/v1
+kind: Job
+metadata: {name: api-migrate, namespace: ongeza}
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ongeza/api
+          command: ["sh", "-c", "php artisan migrate --force --isolated && php artisan tenants:migrate"]
+          envFrom: [{configMapRef: {name: api-config}}, {secretRef: {name: api-secrets}}, {secretRef: {name: partner-databases}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: api, namespace: ongeza}
+spec: {selector: {app: api, tier: web}, ports: [{port: 80, targetPort: http}]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: api-web, namespace: ongeza}
+spec: {minAvailable: 2, selector: {matchLabels: {app: api, tier: web}}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: api-web, namespace: ongeza}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: api-web}
+  minReplicas: 3
+  maxReplicas: 30
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}}]

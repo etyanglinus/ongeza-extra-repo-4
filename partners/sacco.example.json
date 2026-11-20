@@ -1,0 +1,13 @@
+{
+  "id": "example-sacco",
+  "name": "Example SACCO Society Ltd",
+  "kind": "sacco",
+  "dedicatedDatabase": true,
+  "allowPhonePin": true,
+  "allowHostLaunch": false,
+  "branding": { "displayName": "Example SACCO Hisa", "primaryColor": "#8A1538", "secondaryColor": "#5C0E25", "accentColor": "#F2A900" },
+  "products": ["chamas", "junior", "goals", "autopilot", "vaults", "academy", "coach"],
+  "connectors": { "bank": "demo" },
+  "billing": { "platformFee": 60000, "includedActiveCustomers": 3000, "perActiveCustomer": 10, "chamaPremiumFee": 150 },
+  "settings": { "supportPhone": "0700 000 000" }
+}
