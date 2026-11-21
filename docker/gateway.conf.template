@@ -6,6 +6,8 @@ upstream ai       { server ai:8090 max_fails=2 fail_timeout=5s; }
 upstream web      { server web:8080; }
 
 map $http_x_request_id $request_id_out { "" $request_id; default $http_x_request_id; }
+# Behind a TLS proxy (Caddy, a load balancer, ingress) keep the scheme the browser used.
+map $http_x_forwarded_proto $forwarded_proto { "" $scheme; default $http_x_forwarded_proto; }
 
 server {
     listen 8000;
@@ -20,7 +22,7 @@ server {
 
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
     proxy_set_header X-Request-Id $request_id_out;
     proxy_next_upstream error timeout http_502 http_503 non_idempotent;
     proxy_next_upstream_tries 2;
@@ -30,7 +32,11 @@ server {
     location /ai/        { proxy_pass http://ai/; proxy_read_timeout 120s; }
     location /app/       { proxy_pass http://web; }
     location = /         { return 302 /app/; }
-    # Partner onboarding and billing never go through the public gateway.
+    # Everything else is the core API's web side: staff portal (/staff), platform admin (/admin),
+    # signed document links (/documents), the public website and its static assets.
+    location /           { proxy_pass http://api; }
+    # Partner onboarding, billing and metrics never go through the public gateway.
     location /api/platform/ { return 404; }
     location /id/admin/     { return 404; }
+    location = /metrics     { return 404; }
 }

@@ -1,5 +1,13 @@
 # Ongeza app (Flutter web build), served as static files. Build context: the Ongeza-Mobile-App repository.
-FROM ghcr.io/cirruslabs/flutter:stable AS build
+# Flutter is pinned: the app needs Dart >= 3.13.4, newer than published Flutter images.
+FROM debian:bookworm-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+ARG FLUTTER_VERSION=3.50.1
+RUN git clone --depth 1 --branch ${FLUTTER_VERSION} https://github.com/flutter/flutter.git /opt/flutter
+ENV PATH=/opt/flutter/bin:$PATH
+RUN flutter config --no-analytics && flutter precache --web
 ARG IDENTITY_BASE_URL
 ARG AI_BASE_URL
 ARG TENANT=ongeza
